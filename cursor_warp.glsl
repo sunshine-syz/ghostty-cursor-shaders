@@ -1,14 +1,14 @@
 // --- CONFIGURATION ---
 vec4 TRAIL_COLOR = iCurrentCursorColor; // can change to eg: vec4(0.2, 0.6, 1.0, 0.5);
-const float DURATION = 0.2; // total animation time
-const float TRAIL_SIZE = 0.8; // 0.0 = all corners move together. 1.0 = max smear (leading corners jump instantly)
+const float DURATION = 0.25; // total animation time
+const float TRAIL_SIZE = 0.95; // 0.0 = all corners move together. 1.0 = max smear (leading corners jump instantly)
 const float THRESHOLD_MIN_DISTANCE = 1.5; // min distance to show trail (units of cursor height)
-const float BLUR = 1.0; // blur size in pixels (for antialiasing)
+const float BLUR = 1.5; // blur size in pixels (for antialiasing)
 const float TRAIL_THICKNESS = 1.0;  // 1.0 = full cursor height, 0.0 = zero height, >1.0 = funky aah
-const float TRAIL_THICKNESS_X = 0.9;
+const float TRAIL_THICKNESS_X = 1.0;
 
-const float FADE_ENABLED = 0.0; // 1.0 to enable fade gradient along the trail, 0.0 to disable
-const float FADE_EXPONENT = 5.0; // exponent for fade gradient along the trail
+const float FADE_ENABLED = 1.0; // 1.0 to enable fade gradient along the trail, 0.0 to disable
+const float FADE_EXPONENT = 2.5; // exponent for fade gradient along the trail
 
 // --- CONSTANTS for easing functions ---
 const float PI = 3.14159265359;
@@ -32,10 +32,10 @@ const float SPRING_DAMPING = 0.9;
 //     return 1.0 - (1.0 - x) * (1.0 - x);
 // }
 
-// // EaseOutCubic
-// float ease(float x) {
-//     return 1.0 - pow(1.0 - x, 3.0);
-// }
+// EaseOutCubic
+float ease(float x) {
+    return 1.0 - pow(1.0 - x, 3.0);
+}
 
 // // EaseOutQuart
 // float ease(float x) {
@@ -57,10 +57,10 @@ const float SPRING_DAMPING = 0.9;
 //     return x == 1.0 ? 1.0 : 1.0 - pow(2.0, -10.0 * x);
 // }
 
-// EaseOutCirc
-float ease(float x) {
-    return sqrt(1.0 - pow(x - 1.0, 2.0));
-}
+// // EaseOutCirc
+// float ease(float x) {
+//     return sqrt(1.0 - pow(x - 1.0, 2.0));
+// }
 
 // // EaseOutBack
 // float ease(float x) {
@@ -136,7 +136,7 @@ float antialising(float distance, float blurAmount) {
 float getDurationFromDot(float dot_val, float DURATION_LEAD, float DURATION_SIDE, float DURATION_TRAIL) {
     float isLead = step(0.5, dot_val);
     float isSide = step(-0.5, dot_val) * (1.0 - isLead);
-    
+
     // Start with trailing duration
     float duration = mix(DURATION_TRAIL, DURATION_SIDE, isSide);
     // Mix in leading duration
@@ -162,14 +162,14 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     vec2 halfSizeCP = previousCursor.zw * 0.5;
 
     float sdfCurrentCursor = getSdfRectangle(vu, centerCC, halfSizeCC);
-    
+
     float lineLength = distance(centerCC, centerCP);
     float minDist = currentCursor.w * THRESHOLD_MIN_DISTANCE;
-    
+
     vec4 newColor = vec4(fragColor);
 
     float baseProgress = iTime - iTimeCursorChange;
-    
+
     if (lineLength > minDist && baseProgress < DURATION - 0.001) {
         // defining corners of cursors
 
@@ -237,13 +237,13 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
         // calculate vertical-rail durations
         float dot_right_edge = (dot_tr + dot_br) * 0.5;
         float dur_right_rail = getDurationFromDot(dot_right_edge, DURATION_LEAD, DURATION_SIDE, DURATION_TRAIL);
-        
+
         float dot_left_edge = (dot_tl + dot_bl) * 0.5;
         float dur_left_rail = getDurationFromDot(dot_left_edge, DURATION_LEAD, DURATION_SIDE, DURATION_TRAIL);
 
         float final_dur_tl = mix(dur_tl, dur_left_rail, isMovingLeft);
         float final_dur_bl = mix(dur_bl, dur_left_rail, isMovingLeft);
-        
+
         float final_dur_tr = mix(dur_tr, dur_right_rail, isMovingRight);
         float final_dur_br = mix(dur_br, dur_right_rail, isMovingRight);
 
@@ -264,27 +264,24 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
         // --- FADE GRADIENT CALCULATION ---
         vec2 fragVec = vu - centerCP;
-        
+
         // project fragment onto movement vector, normalize to [0, 1]
         // 0.0 at tail, 1.0 at head
         // tiny epsilon to avoid division by zero if moveVec is (0,0)
         float fadeProgress = clamp(dot(fragVec, moveVec) / (dot(moveVec, moveVec) + 1e-6), 0.0, 1.0);
 
         vec4 trail = TRAIL_COLOR;
-        
+
         float effectiveBlur = BLUR;
         if (BLUR < 2.5) {
           // no antialising on horizontal/vertical movement, fixes 'pulse' like thing on end cursor
           float isDiagonal = abs(s.x) * abs(s.y); // 1.0 if diagonal, 0.0 if H/V
-          float effectiveBlur = mix(0.0, BLUR, isDiagonal);
+          effectiveBlur = mix(0.0, BLUR, isDiagonal);
         }
         float shapeAlpha = antialising(sdfTrail, effectiveBlur); // shape mask
 
         if (FADE_ENABLED > 0.5) {
             // apply fade gradient along the trail
-            // float fadeStart = 0.2;
-            // float easedProgress = smoothstep(fadeStart, 1.0, fadeProgress);
-            // easedProgress = pow(2.0, 10.0 * (fadeProgress - 1.0));
             float easedProgress = pow(fadeProgress, FADE_EXPONENT);
             trail.a *= easedProgress;
         }
