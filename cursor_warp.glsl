@@ -22,6 +22,13 @@ const float TRAIL_SIZE = 0.95;
 // trails on short hops; 0.0 trails every movement.
 const float THRESHOLD_MIN_DISTANCE = 1.5;
 
+// Trail only the focused split. TUI apps that repaint on a timer (btop, watch,
+// vim) move their own cursor while unfocused, and an unfocused surface renders
+// only when its content changes -- it never runs the animation loop -- so that
+// single frame leaves a fully-stretched streak frozen there until the next
+// repaint. Set to 0.0 to trail every split.
+const float FOCUSED_ONLY = 1.0;
+
 // Edge softness in pixels. Below 2.5 it applies to diagonal moves only --
 // horizontal/vertical moves keep a hard edge, which avoids a pulsing artifact
 // where the trail meets the cursor. At 2.5 and above it applies to all moves.
@@ -202,7 +209,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     float baseProgress = iTime - iTimeCursorChange;
 
-    if (lineLength > minDist && baseProgress < DURATION - 0.001) {
+    // Apps that hide the cursor (btop, less, vim in some modes) still report a
+    // position, and every repaint moves it. Trailing that draws long streaks the
+    // user never caused, so a hidden cursor gets no trail at all.
+    bool cursorLive = iCursorVisible > 0 && (FOCUSED_ONLY < 0.5 || iFocus > 0);
+    if (cursorLive && lineLength > minDist && baseProgress < DURATION - 0.001) {
         // Corners of both cursor boxes, shrunk about their centres by TRAIL_THICKNESS*.
         float cc_half_height = currentCursor.w * 0.5;
         float cc_center_y = currentCursor.y - cc_half_height;
