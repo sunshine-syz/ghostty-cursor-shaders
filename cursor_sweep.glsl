@@ -1,10 +1,31 @@
-// -- CONFIGURATION ---
-vec4 TRAIL_COLOR = iCurrentCursorColor; // can change to eg: vec4(0.2, 0.6, 1.0, 0.5);
-const float DURATION = 0.2; // in seconds
-const float TRAIL_LENGTH = 0.5;
-const float BLUR = 1.5; // blur size in pixels (for antialiasing)
+// ===========================================================================
+// CONFIGURATION
+// A streak appears already stretched behind the cursor, then sweeps forward and
+// shrinks into it. Unlike cursor_tail, the head never moves.
+// ===========================================================================
 
-// --- CONSTANTS for easing functions ---
+// Trail colour. iCurrentCursorColor follows Ghostty's cursor colour, and its
+// alpha follows `cursor-opacity`. The alpha is load-bearing: it becomes the
+// trail's output alpha, so 0.0 draws nothing. Override eg vec4(0.2,0.6,1.0,0.5).
+vec4 TRAIL_COLOR = iCurrentCursorColor;
+
+// Seconds for the streak to sweep in and vanish.
+const float DURATION = 0.2;
+
+// How much of the distance just travelled the streak covers when it first
+// appears, 0..1. 1.0 reaches all the way back to where the cursor was, 0.0
+// disables the streak. It shrinks to nothing from there.
+const float TRAIL_LENGTH = 0.5;
+
+// Minimum jump before any trail is drawn, in cursor heights. Raise to skip
+// trails on short hops; 0.0 trails every movement.
+const float THRESHOLD_MIN_DISTANCE = 1.5;
+
+// Edge softness in pixels.
+const float BLUR = 1.5;
+
+// Constants for the easing variants below; several stay unused until you
+// uncomment the matching ease().
 const float PI = 3.14159265359;
 const float C1_BACK = 1.70158;
 const float C2_BACK = C1_BACK * 1.525;
@@ -15,6 +36,8 @@ const float SPRING_STIFFNESS = 9.0;
 const float SPRING_DAMPING = 0.9;
 
 // --- EASING FUNCTIONS ---
+// Exactly one ease() may be uncommented. It remaps linear time 0..1 to eased
+// progress 0..1 and sets the feel of the whole animation.
 
 // // Linear
 // float ease(float x) {
@@ -53,12 +76,14 @@ float ease(float x) {
 
 // // EaseOutCirc
 // float ease(float x) {
-//     return sqrt(1.0 - pow(x - 1.0, 2.0));
+//     float t = x - 1.0;
+//     return sqrt(1.0 - t * t);
 // }
 
 // // EaseOutBack
 // float ease(float x) {
-//     return 1.0 + C3_BACK * pow(x - 1.0, 3.0) + C1_BACK * pow(x - 1.0, 2.0);
+//     float t = x - 1.0;
+//     return 1.0 + C3_BACK * t * t * t + C1_BACK * t * t;
 // }
 
 // // EaseOutElastic
@@ -83,9 +108,8 @@ float getSdfRectangle(in vec2 point, in vec2 center, in vec2 halfSize)
     return length(max(d, 0.0)) + min(max(d.x, d.y), 0.0);
 }
 
-// Based on Inigo Quilez's 2D distance functions article: https://iquilezles.org/articles/distfunctions2d/
-// Potencially optimized by eliminating conditionals and loops to enhance performance and reduce branching
-
+// Signed-distance helpers after Inigo Quilez: https://iquilezles.org/articles/distfunctions2d/
+// Written branch-free (step/mix rather than if) so every fragment costs the same.
 float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     vec2 e = b - a;
     vec2 w = p - a;
@@ -95,6 +119,9 @@ float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
 
     float c0 = step(0.0, p.y - a.y);
     float c1 = 1.0 - step(0.0, p.y - b.y);
+    // c2 is inverted vs. IQ's reference (which tests e.x*w.y > e.y*w.x). Harmless: a
+    // horizontal line crosses a closed polygon an even number of times, so flipping s
+    // on the complementary set of edges preserves parity. Do not "fix" it.
     float c2 = 1.0 - step(0.0, e.x * w.y - e.y * w.x);
     float allCond = c0 * c1 * c2;
     float noneCond = (1.0 - c0) * (1.0 - c1) * (1.0 - c2);
@@ -123,25 +150,21 @@ float antialising(float distance) {
 	return 1. - smoothstep(0., normalize(vec2(BLUR, BLUR), 0.).x, distance);
 }
 
+// Which diagonal of the cursor box leads the move. This picks which two corners
+// form the parallelogram's leading edge, so the trail shears the right way.
 float getTopVertexFlag(vec2 a, vec2 b) {
     float condition1 = step(b.x, a.x) * step(a.y, b.y); // a.x < b.x && a.y > b.y
     float condition2 = step(a.x, b.x) * step(b.y, a.y); // a.x > b.x && a.y < b.y
-
-    // if neither condition is met, return 1 (else case)
     return 1.0 - max(condition1, condition2);
 }
-
-vec2 getRectangleCenter(vec4 rectangle) {
-    return vec2(rectangle.x + (rectangle.z / 2.), rectangle.y - (rectangle.w / 2.));
-}
-
 
 void mainImage(out vec4 fragColor, in vec2 fragCoord){
     #if !defined(WEB)
     fragColor = texture(iChannel0, fragCoord.xy / iResolution.xy);
     #endif
 
-    // normalization & setup(-1, 1 coords)
+    // Everything below works in the shader's normalised space: y spans -1..1 over
+    // the pane height, so a length of 2.0 is one full pane height.
     vec2 vu = normalize(fragCoord, 1.);
     vec2 offsetFactor = vec2(-.5, 0.5);
 
@@ -157,20 +180,21 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
      vec4 newColor = vec4(fragColor);
 
-     float minDist = currentCursor.w * 1.5;
+     float minDist = currentCursor.w * THRESHOLD_MIN_DISTANCE;
      float progress = clamp((iTime - iTimeCursorChange) / DURATION, 0.0, 1.0);
-     if (lineLength > minDist) {
-         // --- Animation Logic ---
+     if (lineLength > minDist && progress < 1.0) {
+         // 0 = streak at full TRAIL_LENGTH, 1 = fully collapsed into the cursor.
          float shrinkFactor = ease(progress);
 
-        // detect straight moves
+        // Straight moves collapse the parallelogram to a rectangle, so they get their
+        // own axis-aligned SDF; both are evaluated and selected between.
         vec2 delta = abs(centerCC - centerCP);
         float threshold = 0.001;
         float isHorizontal = step(delta.y, threshold);
         float isVertical = step(delta.x, threshold);
         float isStraightMove = max(isHorizontal, isVertical);
 
-        // -- Making parallelogram sdf (diagonal moves) ---
+        // -- Diagonal move: parallelogram from the cursor back along the path --
         float topVertexFlag = getTopVertexFlag(currentCursor.xy, previousCursor.xy);
         float bottomVertexFlag = 1.0 - topVertexFlag;
         vec2 v0 = vec2(currentCursor.x + currentCursor.z * topVertexFlag, currentCursor.y - currentCursor.w);
@@ -185,7 +209,7 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
         float sdfTrail_diag = getSdfParallelogram(vu, v0, v1, v2_anim, v3_anim);
 
-        // --- Making rectangle sdf (straight moves) ---
+        // -- Straight move: axis-aligned box, near edge pinned to the cursor --
         vec2 min_center = min(centerCP, centerCC);
         vec2 max_center = max(centerCP, centerCC);
 
@@ -200,14 +224,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
         float sdfTrail_rect = getSdfRectangle(vu, animCenter, animSize * 0.5);
 
-        // -- Selecting and drawing the trail sdf --
         float sdfTrail = mix(sdfTrail_diag, sdfTrail_rect, isStraightMove);
 
         vec4 trail = TRAIL_COLOR;
         float trailAlpha = antialising(sdfTrail);
+        // trail.a must reach the output alpha. Substituting newColor.a makes long
+        // trails vanish over blank background -- iChannel0's alpha there is too low.
         newColor = mix(newColor, trail, trailAlpha);
 
-        // Punch hole
+        // Restore the cursor cell so the real cursor draws on top of the trail.
         newColor = mix(newColor, fragColor, step(sdfCurrentCursor, 0.));
     }
 
