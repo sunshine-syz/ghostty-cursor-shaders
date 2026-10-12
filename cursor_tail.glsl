@@ -34,19 +34,12 @@ const float FOCUSED_ONLY = 1.0;
 const float BLUR = 1.5;
 
 // Fade the trail out towards its tail; 0.0 disables it for flat opacity.
-// Off by default here -- cursor_warp ships it on, this shader has always drawn a
-// flat streak, and the two look different enough to be worth choosing between.
+// Off by default here and on in cursor_warp: a flat streak and a faded one look
+// different enough to be worth choosing between.
 const float FADE_ENABLED = 0.0;
 // Fade curve. Below 1.0 holds most of the trail opaque and fades only near the
 // tail (0.5 = square root); above 1.0 leaves just a bright stub at the head.
 const float FADE_EXPONENT = 0.5;
-
-// Headroom for eases that return values above 1.0, as a fraction of the distance
-// moved. The trail is clipped to a box spanning the two cursor positions so the
-// rest of the pane can skip the shape work; an overshooting ease puts the head
-// outside that box and it would be cut off. 0.0 suits every ease that lands on
-// 1.0 -- which the shipped default does -- and keeps the clip tightest.
-const float EASE_OVERSHOOT = 0.0;
 
 // Constants for the easing variants below; several stay unused until you
 // uncomment the matching ease().
@@ -64,8 +57,7 @@ const float SPRING_DAMPING = 0.9;
 // progress 0..1 and sets the feel of the whole animation.
 //
 // The Back, Elastic, and Spring variants overshoot past 1.0, which reads as
-// springiness here and is fine -- but raise EASE_OVERSHOOT above if you enable
-// one, or the overshooting head is clipped where it leaves the bounding box.
+// springiness here and is fine.
 
 // // Linear
 // float ease(float x) {
@@ -148,7 +140,9 @@ float getSdfRectangle(in vec2 p, in vec2 xy, in vec2 b)
 float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     vec2 e = b - a;
     vec2 w = p - a;
-    vec2 proj = a + e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+    // max() keeps a zero-length edge finite: the eases land exactly on their
+    // endpoints and collapse edges, and 0/0 is a NaN that survives every mix().
+    vec2 proj = a + e * clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
     float segd = dot(p - proj, p - proj);
     d = min(d, segd);
 
@@ -165,8 +159,6 @@ float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     return d;
 }
 
-// Callers must keep every edge non-degenerate: seg() divides by dot(e, e), so a
-// zero-length edge yields NaN rather than an empty shape.
 float getSdfParallelogram(in vec2 p, in vec2 v0, in vec2 v1, in vec2 v2, in vec2 v3) {
     float s = 1.0;
     float d = dot(p - v0, p - v0);
@@ -222,10 +214,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     float lineLength = distance(centerCP, centerCC);
 
-    // Scaled by the longest side rather than the height: an underline cursor is a
-    // cell wide and a couple of pixels tall, so scaling by height would put the
-    // threshold below one character and smear every single-character step.
-    float minDist = max(currentCursor.z, currentCursor.w) * THRESHOLD_MIN_DISTANCE;
+    // Scaled by the cell height. Block and bar cursors are a cell tall, but an
+    // underline is a couple of pixels tall, and its width alone would trail every
+    // one-line step. No uniform carries the cell height, so an underline's is
+    // estimated at twice its width -- roughly a monospace cell's aspect.
+    float cellHeight = currentCursor.w > currentCursor.z ? currentCursor.w : 2.0 * currentCursor.z;
+    float minDist = cellHeight * THRESHOLD_MIN_DISTANCE;
 
     float progress = clamp((iTime - iTimeCursorChange) / DURATION, 0.0, 1.0);
 
@@ -234,7 +228,9 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     // user never caused, so a hidden cursor gets no trail at all.
     bool cursorLive = iCursorVisible > 0 && (FOCUSED_ONLY < 0.5 || iFocus > 0);
 
-    if (!cursorLive || lineLength <= minDist || progress >= 1.0) {
+    // Ghostty zero-fills iPreviousCursor until the cursor first moves, so without
+    // the size test a new split's first draw trails in from the pane corner.
+    if (!cursorLive || previousCursor.z <= 0.0 || lineLength <= minDist || progress >= 1.0) {
         return;
     }
 
@@ -243,24 +239,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     // Softness in normalised units, shared by the trail edge and the cursor restore.
     float aaWidth = 2.0 * BLUR / iResolution.y;
 
-    // Nothing is drawn outside the two cursor boxes and the span between them, but
-    // the SDF below would still run for every pixel of the pane. Bounding it first
-    // skips that; the test is uniform-derived, so whole wavefronts take the same
-    // side and it costs no divergence. Padding by the full box rather than the
-    // half covers the mixed-size vertices below, which pair one cursor's position
-    // with the other's width.
-    vec2 pad = max(currentCursor.zw, previousCursor.zw)
-             + vec2(aaWidth + EASE_OVERSHOOT * lineLength);
-    vec2 bbMin = min(centerCC, centerCP) - pad;
-    vec2 bbMax = max(centerCC, centerCP) + pad;
-    if (any(lessThan(vu, bbMin)) || any(greaterThan(vu, bbMax))) {
-        return;
-    }
-
-    // Fraction of the animation the tail waits before setting off, so the gap
-    // settles near MAX_TRAIL_LENGTH. Capped below 1.0 because on short moves it
-    // exceeds 1.0, and smoothstep with edge0 > edge1 is undefined -- a NaN would
-    // survive the mix below even though that branch is discarded.
+    // Fraction of the animation the tail waits before setting off, so it lags the
+    // head. Capped below 1.0 because on short moves it exceeds 1.0, and smoothstep
+    // with edge0 > edge1 is undefined -- a NaN would survive the mix below even
+    // though that branch is discarded.
     float tail_delay_factor = min(MAX_TRAIL_LENGTH / lineLength, 0.999);
 
     float isLongMove = step(MAX_TRAIL_LENGTH, lineLength);
@@ -274,9 +256,26 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     float head_eased = mix(head_eased_short, head_eased_long, isLongMove);
     float tail_eased = mix(tail_eased_short, tail_eased_long, isLongMove);
+    // The delay is in time but the head is eased, so by the time the tail sets off
+    // the head is already well past MAX_TRAIL_LENGTH. Pulling the tail up behind
+    // it bounds the gap. Short moves are unaffected: the bound is negative there.
+    tail_eased = max(tail_eased, head_eased - MAX_TRAIL_LENGTH / lineLength);
 
     vec2 head_center = mix(centerCP, centerCC, head_eased);
     vec2 tail_center = mix(centerCP, centerCC, tail_eased);
+
+    // Nothing is drawn outside the streak's current span, but the SDF below would
+    // still run for every pixel of the pane. Bounding it first skips that. The box
+    // is the same for every fragment, so only wavefronts on its border diverge.
+    // It follows the animated head, so an overshooting ease is never clipped.
+    // Padding by the full box rather than the half covers the mixed-size vertices
+    // below, which pair one cursor's position with the other's width.
+    vec2 pad = max(currentCursor.zw, previousCursor.zw) + vec2(aaWidth);
+    vec2 bbMin = min(head_center, tail_center) - pad;
+    vec2 bbMax = max(head_center, tail_center) + pad;
+    if (any(lessThan(vu, bbMin)) || any(greaterThan(vu, bbMax))) {
+        return;
+    }
 
     // Straight moves collapse the parallelogram to a rectangle, so they get their
     // own axis-aligned SDF. Which one applies depends only on the cursor
@@ -324,30 +323,34 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     vec4 trail = TRAIL_COLOR;
 
     if (FADE_ENABLED > 0.5) {
-        // Where this fragment sits along the streak: 0.0 at the tail, 1.0 at the
-        // head. Anchored to the animated pair rather than the static endpoints so
-        // the gradient always spans the visible shape -- the streak covers only
-        // part of the move for most of its life.
+        // Where this fragment sits along the streak: 0.0 at the tail's centre, 1.0
+        // at the head's. The half box behind the tail fades out fully, as in
+        // cursor_warp. Anchored to the animated pair rather than the static
+        // endpoints so the gradient always spans the visible shape -- the streak
+        // covers only part of the move for most of its life.
         vec2 fadeAxis = head_center - tail_center;
         float fadeProgress = clamp(dot(vu - tail_center, fadeAxis) / (dot(fadeAxis, fadeAxis) + 1e-6), 0.0, 1.0);
         trail.a *= pow(fadeProgress, FADE_EXPONENT);
     }
 
-    // trail.a scales coverage as well as reaching the output alpha, so
-    // `cursor-opacity` shows text through the trail -- matching cursor_warp.
-    // Substituting newColor.a for it makes long trails vanish over blank
-    // background: iChannel0's alpha there is too low.
+    // trail.a scales coverage, so `cursor-opacity` shows text through the trail.
+    // The blend targets alpha 1.0, not trail.a: targeting trail.a applies it a
+    // second time and leaves the trail more see-through than a translucent
+    // background. Coverage must not come from newColor.a either: iChannel0's
+    // alpha is too low over blank background, and long trails vanish.
     float trailAlpha = antialiasing(sdfTrail, aaWidth) * trail.a;
-    vec4 newColor = mix(fragColor, trail, trailAlpha);
+    vec4 newColor = mix(fragColor, vec4(trail.rgb, 1.0), trailAlpha);
 
     // Restore the cursor cell so the real cursor draws on top of the trail.
     // Feathered on diagonal moves, where a hard step against the trail's own soft
-    // edge leaves a stair-stepped seam. Kept hard on straight moves: there the two
-    // edges are collinear, and softening both stacks their ramps into a visible
-    // line. 1e-6 rather than 0.0 keeps smoothstep's edges distinct.
+    // edge leaves a stair-stepped seam. The feather runs outward only, like the
+    // trail edge, so a cursor thinner than it -- a bar or underline -- is still
+    // fully restored. Kept hard on straight moves: there the two edges are
+    // collinear, and softening both stacks their ramps into a visible line. 1e-6
+    // rather than 0.0 keeps smoothstep's edges distinct.
     float sdfCurrentCursor = getSdfRectangle(vu, centerCC, currentCursor.zw * 0.5);
     float restoreWidth = isStraightMove ? 1e-6 : aaWidth;
-    newColor = mix(newColor, fragColor, 1.0 - smoothstep(-restoreWidth, restoreWidth, sdfCurrentCursor));
+    newColor = mix(newColor, fragColor, 1.0 - smoothstep(0.0, restoreWidth, sdfCurrentCursor));
 
     fragColor = newColor;
 }

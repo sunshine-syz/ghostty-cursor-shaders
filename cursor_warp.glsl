@@ -5,8 +5,8 @@
 // ===========================================================================
 
 // Trail colour. iCurrentCursorColor follows Ghostty's cursor colour, and its
-// alpha follows `cursor-opacity`. The alpha is load-bearing: it becomes the
-// trail's output alpha, so 0.0 draws nothing. Override eg vec4(0.2,0.6,1.0,0.5).
+// alpha follows `cursor-opacity`. The alpha is load-bearing: it scales the
+// trail's coverage, so 0.0 draws nothing. Override eg vec4(0.2,0.6,1.0,0.5).
 vec4 TRAIL_COLOR = iCurrentCursorColor;
 
 // Seconds for the last (trailing) corner to reach the cursor.
@@ -154,7 +154,9 @@ float getSdfRectangle(in vec2 p, in vec2 xy, in vec2 b)
 float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     vec2 e = b - a;
     vec2 w = p - a;
-    vec2 proj = a + e * clamp(dot(w, e) / dot(e, e), 0.0, 1.0);
+    // max() keeps a zero-length edge finite: the eases land exactly on their
+    // endpoints and collapse edges, and 0/0 is a NaN that survives every mix().
+    vec2 proj = a + e * clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
     float segd = dot(p - proj, p - proj);
     d = min(d, segd);
 
@@ -171,8 +173,6 @@ float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     return d;
 }
 
-// Callers must keep every edge non-degenerate: seg() divides by dot(e, e), so a
-// zero-length edge yields NaN rather than an empty shape.
 float getSdfConvexQuad(in vec2 p, in vec2 v1, in vec2 v2, in vec2 v3, in vec2 v4) {
     float s = 1.0;
     float d = dot(p - v1, p - v1);
@@ -232,10 +232,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     float lineLength = distance(centerCC, centerCP);
 
-    // Scaled by the longest side rather than the height: an underline cursor is a
-    // cell wide and a couple of pixels tall, so scaling by height would put the
-    // threshold below one character and smear every single-character step.
-    float minDist = max(currentCursor.z, currentCursor.w) * THRESHOLD_MIN_DISTANCE;
+    // Scaled by the cell height. Block and bar cursors are a cell tall, but an
+    // underline is a couple of pixels tall, and its width alone would trail every
+    // one-line step. No uniform carries the cell height, so an underline's is
+    // estimated at twice its width -- roughly a monospace cell's aspect.
+    float cellHeight = currentCursor.w > currentCursor.z ? currentCursor.w : 2.0 * currentCursor.z;
+    float minDist = cellHeight * THRESHOLD_MIN_DISTANCE;
 
     float baseProgress = iTime - iTimeCursorChange;
 
@@ -244,7 +246,10 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     // user never caused, so a hidden cursor gets no trail at all.
     bool cursorLive = iCursorVisible > 0 && (FOCUSED_ONLY < 0.5 || iFocus > 0);
 
-    if (!cursorLive || lineLength <= minDist || baseProgress >= DURATION - 0.001) {
+    // Ghostty zero-fills iPreviousCursor until the cursor first moves, so without
+    // the size test a new split's first draw trails in from the pane corner.
+    if (!cursorLive || previousCursor.z <= 0.0 || lineLength <= minDist
+        || baseProgress >= DURATION - 0.001) {
         return;
     }
 
@@ -266,9 +271,12 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
 
     // Nothing is drawn outside the two cursor boxes and the span between them, but
     // the quad SDF below would still run for every pixel of the pane. Bounding it
-    // first skips that; the test is uniform-derived, so whole wavefronts take the
-    // same side and it costs no divergence. The thickness terms are floored at 1.0
-    // because TRAIL_THICKNESS above 1.0 overflows the cursor box.
+    // first skips that. The box is the same for every fragment, so only wavefronts
+    // on its border diverge. It spans the static endpoints, not the animated
+    // corners: the quad covers most of the move for most of the animation, so a
+    // tighter box saves little and would make every pixel pay for the corner work
+    // below. The thickness terms are floored at 1.0 because TRAIL_THICKNESS above
+    // 1.0 overflows the cursor box.
     vec2 thickness = vec2(max(TRAIL_THICKNESS_X, 1.0), max(TRAIL_THICKNESS, 1.0));
     vec2 pad = max(currentCursor.zw, previousCursor.zw) * thickness
              + vec2(aaWidth + EASE_OVERSHOOT * lineLength);
@@ -375,17 +383,22 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
         trail.a *= pow(fadeProgress, FADE_EXPONENT);
     }
 
-    // trail.a must reach the output alpha. Substituting newColor.a makes long
-    // trails vanish over blank background -- iChannel0's alpha there is too low.
+    // trail.a scales coverage, so `cursor-opacity` shows text through the trail.
+    // The blend targets alpha 1.0, not trail.a: targeting trail.a applies it a
+    // second time and leaves the trail more see-through than a translucent
+    // background. Coverage must not come from newColor.a either: iChannel0's
+    // alpha is too low over blank background, and long trails vanish.
     float finalAlpha = trail.a * shapeAlpha;
-    vec4 newColor = mix(fragColor, trail, finalAlpha);
+    vec4 newColor = mix(fragColor, vec4(trail.rgb, 1.0), finalAlpha);
 
     // Restore the cursor cell so the real cursor draws on top of the trail.
     // Feathered over the same width as the trail edge, so the diagonal moves that
     // soften one soften the other and no stair-stepped seam is left between them.
     // On the straight moves held at 1e-4 blur above this collapses back to a step.
+    // Outward only, like the trail edge, so a cursor thinner than the feather --
+    // a bar or underline -- is still fully restored.
     float sdfCurrentCursor = getSdfRectangle(vu, centerCC, halfSizeCC);
-    newColor = mix(newColor, fragColor, 1.0 - smoothstep(-aaWidth, aaWidth, sdfCurrentCursor));
+    newColor = mix(newColor, fragColor, 1.0 - smoothstep(0.0, aaWidth, sdfCurrentCursor));
 
     fragColor = newColor;
 }
