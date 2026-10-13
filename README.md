@@ -25,11 +25,10 @@
 - [rectangle_boom_cursor.glsl](rectangle_boom_cursor.glsl): Same as boom_cursor but rectangular(cursor shape)
 - [ripple_rectangle_cursor.glsl](ripple_rectangle_cursor.glsl): Same as ripple_cursor but rectangular(cursor shape)
 
+## Usage
 
 > [!NOTE]
-> If you have the line cursor (default), these effects will trigger and freeze on unfocus(as cursor changes to hollow block). The solution is to add `custom-shader-animation = always` to your ghostty config
-
-## Usage
+> These shaders need Ghostty 1.3.0 or later.
 
 1. Clone the repo into your ghostty shaders directory:
 ```bash

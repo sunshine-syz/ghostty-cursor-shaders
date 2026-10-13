@@ -5,10 +5,17 @@
 // eases across and the tail follows, at most MAX_TRAIL_LENGTH behind.
 // ===========================================================================
 
-// Trail color. iCurrentCursorColor is Ghostty's cursor color, and its alpha is
-// `cursor-opacity`. The alpha sets the trail opacity, so 0.0 hides the trail.
-// To override, use a value such as vec4(0.2, 0.6, 1.0, 0.5).
+// Trail color at the cursor. iCurrentCursorColor is Ghostty's cursor color, and
+// its alpha is `cursor-opacity`. The alpha sets the trail opacity, so 0.0 hides
+// the trail. To override, use a value such as vec4(0.2, 0.6, 1.0, 0.5).
 vec4 TRAIL_COLOR = iCurrentCursorColor;
+
+// Trail color at the tail end. The trail blends from this color to TRAIL_COLOR.
+// iPreviousCursorColor is the cursor color before the move. It differs from the
+// current color only when the color changes in the same cursor update as the
+// move, for example with `cursor-color = cell-foreground`. If you override
+// TRAIL_COLOR, set this to TRAIL_COLOR for one flat color.
+vec4 TRAIL_COLOR_TAIL = iPreviousCursorColor;
 
 // Seconds for the tail to reach the cursor.
 const float DURATION = 0.1;
@@ -299,15 +306,16 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
         sdfTrail = getSdfQuad(vu, v0, v1, v2, v3);
     }
 
-    vec4 trail = TRAIL_COLOR;
+    // Position along the streak: 0.0 at the tail center, 1.0 at the head
+    // center. It follows the animated head and tail, because the streak covers
+    // only part of the move for most of the animation.
+    vec2 trailAxis = head_center - tail_center;
+    float alongTrail = clamp(dot(vu - tail_center, trailAxis) / (dot(trailAxis, trailAxis) + 1e-6), 0.0, 1.0);
+
+    vec4 trail = mix(TRAIL_COLOR_TAIL, TRAIL_COLOR, alongTrail);
 
     if (FADE_ENABLED > 0.5) {
-        // Position along the streak: 0.0 at the tail center, 1.0 at the head
-        // center. It follows the animated head and tail, because the streak
-        // covers only part of the move for most of the animation.
-        vec2 fadeAxis = head_center - tail_center;
-        float fadeProgress = clamp(dot(vu - tail_center, fadeAxis) / (dot(fadeAxis, fadeAxis) + 1e-6), 0.0, 1.0);
-        trail.a *= pow(fadeProgress, FADE_EXPONENT);
+        trail.a *= pow(alongTrail, FADE_EXPONENT);
     }
 
     // trail.a scales the coverage. Blend toward alpha 1.0, not trail.a: a

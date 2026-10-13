@@ -2,7 +2,7 @@
 const float DURATION = 0.15;               // How long the ripple animates (seconds)
 const float MAX_SIZE = 0.05;             // Max radius in normalized coords (0.5 = 1/4 screen height)
 const float ANIMATION_START_OFFSET = 0.0;        // Start the ripple slightly progressed (0.0 - 1.0)
-vec4 COLOR = vec4(0.35, 0.36, 0.44, 1.0); // change to iCurrentCursorColor for your cursor's color
+vec4 COLOR = iCurrentCursorColor;         // Cursor color. Or a fixed color, vec4(0.35, 0.36, 0.44, 1.0), or a theme color, vec4(iPalette[4], 1.0)
 const float CURSOR_WIDTH_CHANGE_THRESHOLD = 0.5; // Triggers ripple if cursor width changes by this fraction
 const float BLUR = 3.0;                    // Blur level in pixels
 
@@ -110,12 +110,20 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     float rippleProgress = (iTime - iTimeCursorChange) / DURATION + ANIMATION_START_OFFSET;
     // don't clamp yet; we need to know if it's > 1.0 (finished)
     float isAnimating = 1.0 - step(1.0, rippleProgress); // progress < 1.0 ? 1.0: 0.0
-    
+
+    // Losing focus turns the cursor into a hollow block, and gaining focus
+    // turns it back. The width test sees both as mode changes. An unfocused
+    // split also stops animating, so a pulse there freezes. On focus gain,
+    // Ghostty sets iTimeFocus and iTimeCursorChange in the same frame, and
+    // 0.05 s allows a few frames of skew. A hidden cursor gets no pulse.
+    bool cursorLive = iCursorVisible > 0 && iFocus > 0
+        && abs(iTimeCursorChange - iTimeFocus) > 0.05;
+
     // WHY NOT BRANCHLESS??? here ya go:
     // because we NEVER have divergence, even in this if/else branchfull logic
     // why? because its UNIFORM branching (ie, all fragments take the same path) which modern GPUs handles efficiently
     // its far more efficient than calculating the ripple EVERY FRAME even when not needed(branchless)
-    if (isModeChange > 0.0 && isAnimating > 0.0) {
+    if (cursorLive && isModeChange > 0.0 && isAnimating > 0.0) {
         // float easedProgress = rippleProgress;
         // float easedProgress = easeOutQuad(rippleProgress);
         // float easedProgress = easeInOutQuad(rippleProgress);
