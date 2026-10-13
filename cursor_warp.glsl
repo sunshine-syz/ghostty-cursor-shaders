@@ -51,10 +51,11 @@ const float FADE_ENABLED = 1.0;
 // cursor.
 const float FADE_EXPONENT = 0.5;
 
-// Extra room for eases that go above 1.0, as a fraction of the distance moved.
+// Extra room for eases that go above 1.0 or below 0.0, as a fraction of the
+// distance moved.
 // The shader skips the shape work outside a box around both cursor positions,
 // so corners that an overshooting ease moves out of that box are clipped.
-// 0.0 is correct for eases that stop at 1.0, such as the default.
+// 0.0 is correct for eases that stay in 0..1, such as the default.
 const float EASE_OVERSHOOT = 0.0;
 
 // Constants for the easing functions below. Most are used only by the
@@ -71,10 +72,10 @@ const float SPRING_DAMPING = 0.9;
 // 0..1 and sets the feel of the animation. Use multiplication, not pow():
 // pow() is undefined for a negative base.
 //
-// The Back, Elastic and Spring variants go above 1.0. Here that gives a
-// springy motion. If you enable one, set EASE_OVERSHOOT to at least its
-// overshoot (Back 0.1, Elastic 0.38, Spring 0.06), or the box clips the
-// corners.
+// The Back, Elastic and Spring variants go above 1.0, and Spring also dips to
+// -0.17 at the start. Here that gives a springy motion. If you enable one, set
+// EASE_OVERSHOOT to at least its overshoot (Back 0.1, Elastic 0.38, Spring
+// 0.17), or the box clips the corners.
 
 // // Linear
 // float ease(float x) {
@@ -155,8 +156,9 @@ float getSdfRectangle(in vec2 p, in vec2 center, in vec2 halfSize)
 float seg(in vec2 p, in vec2 a, in vec2 b, inout float s, float d) {
     vec2 e = b - a;
     vec2 w = p - a;
-    // max() prevents 0/0 on a zero-length edge. The eases can collapse an edge,
-    // and a NaN distance survives every later mix().
+    // max() prevents 0/0 on a zero-length edge. TRAIL_THICKNESS or
+    // TRAIL_THICKNESS_X at 0.0 collapses an edge, and a NaN distance survives
+    // every later mix().
     vec2 proj = a + e * clamp(dot(w, e) / max(dot(e, e), 1e-12), 0.0, 1.0);
     d = min(d, dot(p - proj, p - proj));
 
@@ -225,7 +227,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     float lineLength = distance(centerCC, centerCP);
 
     // No uniform gives the cell height. An underline cursor is only a few
-    // pixels tall, so its cell height is estimated as twice its width.
+    // pixels tall, so its cell height is estimated as twice its width. On a
+    // wide character the underline is two cells wide, so the estimate doubles.
     float cellHeight = iCurrentCursorStyle == CURSORSTYLE_UNDERLINE ? 2.0 * currentCursor.z : currentCursor.w;
     float minDist = cellHeight * THRESHOLD_MIN_DISTANCE;
 
@@ -250,11 +253,11 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     vec2 s = sign(moveVec);
 
     // Straight moves keep a hard edge (see BLUR). 1e-4, not 0.0, keeps the
-    // smoothstep edges different.
-    float effectiveBlur = BLUR;
+    // smoothstep edges different, also when BLUR is 0.0.
+    float effectiveBlur = max(BLUR, 1e-4);
     if (BLUR < 2.5) {
         float isDiagonal = abs(s.x) * abs(s.y);
-        effectiveBlur = mix(1e-4, BLUR, isDiagonal);
+        effectiveBlur = mix(1e-4, effectiveBlur, isDiagonal);
     }
     float aaWidth = 2.0 * effectiveBlur / iResolution.y;
 

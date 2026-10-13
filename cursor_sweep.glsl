@@ -59,9 +59,10 @@ const float SPRING_DAMPING = 0.9;
 // This shader clamps the eased value to 0..1. The streak must shrink into the
 // cursor box, and a value above 1.0 pushes it out past the cursor. The clamp
 // changes the overshooting variants: Back and Spring reach 1.0 at about one
-// third of the time and stay there, so the streak disappears early. Elastic
-// drops below 1.0 again, so the streak briefly comes back. For a springy
-// motion, use cursor_tail or cursor_warp.
+// third of the time and stay there, so the streak disappears early. Spring
+// also dips below 0.0 at the start, so the streak holds its full length for
+// the first tenth of the time. Elastic drops below 1.0 again, so the streak
+// briefly comes back. For a springy motion, use cursor_tail or cursor_warp.
 
 // // Linear
 // float ease(float x) {
@@ -213,7 +214,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     float lineLength = distance(centerCC, centerCP);
 
     // No uniform gives the cell height. An underline cursor is only a few
-    // pixels tall, so its cell height is estimated as twice its width.
+    // pixels tall, so its cell height is estimated as twice its width. On a
+    // wide character the underline is two cells wide, so the estimate doubles.
     float cellHeight = iCurrentCursorStyle == CURSORSTYLE_UNDERLINE ? 2.0 * currentCursor.z : currentCursor.w;
     float minDist = cellHeight * THRESHOLD_MIN_DISTANCE;
 
@@ -233,7 +235,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     }
 
     vec2 vu = toShaderSpace(fragCoord, 1.);
-    float aaWidth = 2.0 * BLUR / iResolution.y;
+    // max() keeps the smoothstep edges different when BLUR is 0.0.
+    float aaWidth = 2.0 * max(BLUR, 1e-4) / iResolution.y;
 
     // 0.0 is the full-length streak, 1.0 is fully shrunk into the cursor.
     float shrinkFactor = clamp(ease(progress), 0.0, 1.0);

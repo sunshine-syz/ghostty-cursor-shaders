@@ -1,14 +1,15 @@
 // CONFIGURATION
 const float DURATION = 0.15;               // How long the ripple animates (seconds)
-const float MAX_SIZE = 0.05;             // Max radius in normalized coords (0.5 = 1/4 screen height)
-const float RING_THICKNESS = 0.02;             // Ring width in normalized coords
-const float CURSOR_WIDTH_CHANGE_THRESHOLD = 0.5; // Triggers ripple if cursor width changes by this fraction
+const float MAX_SIZE = 0.05;             // How far each edge moves out, in shader space (0.5 = 1/4 pane height)
+const float RING_THICKNESS = 0.02;             // Ring width in shader space
+const float CURSOR_WIDTH_CHANGE_THRESHOLD = 0.5; // Pulse if the width changes by more than this fraction of the larger width. Below 0.5, moves onto or off a wide character also pulse
 vec4 COLOR = iCurrentCursorColor;         // Cursor color. Or a fixed color, vec4(0.35, 0.36, 0.44, 1.0), or a theme color, vec4(iPalette[4], 1.0)
 const float BLUR = 1.0;                    // Blur level in pixels
 const float ANIMATION_START_OFFSET = 0.0;        // Start the ripple slightly progressed (0.0 - 1.0)
 
 
-// Easing functions
+// Easing functions. pow() is undefined for a negative base, so use
+// multiplication there.
 float easeOutQuad(float t) {
     return 1.0 - (1.0 - t) * (1.0 - t);
 }
@@ -28,13 +29,14 @@ float easeOutExpo(float t) {
     return t == 1.0 ? 1.0 : 1.0 - pow(2.0, -10.0 * t);
 }
 float easeOutCirc(float t) {
-    return sqrt(1.0 - pow(t - 1.0, 2.0));
+    float u = t - 1.0;
+    return sqrt(1.0 - u * u);
 }
 float easeOutSine(float t) {
-    return sin((t * 3.1415916) / 2.0);
+    return sin((t * 3.14159265) / 2.0);
 }
 float easeOutElastic(float t) {
-    const float c4 = (2.0 * 3.1415916) / 3.0;
+    const float c4 = (2.0 * 3.14159265) / 3.0;
     return t == 0.0 ? 0.0 : t == 1.0 ? 1.0 : pow(2.0, -10.0 * t) * sin((t * 10.0 - 0.75) * c4) + 1.0;
 }
 float easeOutBounce(float t) {
@@ -53,7 +55,8 @@ float easeOutBounce(float t) {
 float easeOutBack(float t) {
     const float c1 = 1.70158;
     const float c3 = c1 + 1.0;
-    return 1.0 + c3 * pow(t - 1.0, 3.0) + c1 * pow(t - 1.0, 2.0);
+    float u = t - 1.0;
+    return 1.0 + c3 * u * u * u + c1 * u * u;
 }
 
 // Pulse fade functions
@@ -61,10 +64,12 @@ float easeOutPulse(float t) {
     return t * (2.0 - t);
 }
 float exponentialDecayPulse(float t) {
-    return exp(-3.0 * t) * sin(t * 3.1415916);
+    return exp(-3.0 * t) * sin(t * 3.14159265);
 }
 
-vec2 normalize(vec2 value, float isPosition) {
+// Converts pixels to shader space, where y is -1..1 over the pane height.
+// isPosition 1.0 moves the origin to the pane center. 0.0 converts a size.
+vec2 toShaderSpace(vec2 value, float isPosition) {
     return (value * 2.0 - (iResolution.xy * isPosition)) / iResolution.y;
 }
 
@@ -76,39 +81,38 @@ float getSdfRectangle(in vec2 p, in vec2 xy, in vec2 b){
 void mainImage(out vec4 fragColor, in vec2 fragCoord){
     #if !defined(WEB)
     fragColor = texture(iChannel0, fragCoord.xy / iResolution.xy);
+    #else
+    // fragColor is read below, so it must have a value.
+    fragColor = vec4(0.0);
     #endif
 
-    // Normalization & setup (-1 to 1 coords)
-    vec2 vu = normalize(fragCoord, 1.);
+    vec2 vu = toShaderSpace(fragCoord, 1.);
     vec2 offsetFactor = vec2(-.5, 0.5);
 
-    vec4 currentCursor = vec4(normalize(iCurrentCursor.xy, 1.), normalize(iCurrentCursor.zw, 0.));
-    vec4 previousCursor = vec4(normalize(iPreviousCursor.xy, 1.), normalize(iPreviousCursor.zw, 0.));
-
+    vec4 currentCursor = vec4(toShaderSpace(iCurrentCursor.xy, 1.), toShaderSpace(iCurrentCursor.zw, 0.));
     vec2 centerCC = currentCursor.xy - (currentCursor.zw * offsetFactor);
 
-    float cellWidth = max(currentCursor.z, previousCursor.z); // width of the 'block' cursor
-    
-    // check for significant width change
-    float widthChange = abs(currentCursor.z - previousCursor.z);
-    float widthThresholdNorm = cellWidth * CURSOR_WIDTH_CHANGE_THRESHOLD;
-    float isModeChange = step(widthThresholdNorm, widthChange);
-
+    // A move onto or off a wide character doubles or halves the width: a
+    // change of exactly 0.5 of the larger width. Pixel widths are whole
+    // numbers, so the test is exact, and at 0.5 the strict > skips the move.
+    // Ghostty fills iPreviousCursor with zeros until the cursor first moves.
+    float widthChange = abs(iCurrentCursor.z - iPreviousCursor.z);
+    bool isModeChange = iPreviousCursor.z > 0.0
+        && widthChange > max(iCurrentCursor.z, iPreviousCursor.z) * CURSOR_WIDTH_CHANGE_THRESHOLD;
 
     // ANIMATION
     float rippleProgress = (iTime - iTimeCursorChange) / DURATION + ANIMATION_START_OFFSET;
-    // don't clamp yet; we need to know if it's > 1.0 (finished)
-     float isAnimating = 1.0 - step(1.0, rippleProgress); // progress < 1.0 ? 1.0: 0.0
 
     // Losing focus turns the cursor into a hollow block, and gaining focus
-    // turns it back. The width test sees both as mode changes. An unfocused
-    // split also stops animating, so a pulse there freezes. On focus gain,
-    // Ghostty sets iTimeFocus and iTimeCursorChange in the same frame, and
-    // 0.05 s allows a few frames of skew. A hidden cursor gets no pulse.
+    // turns it back. From a bar cursor, the width test sees both as mode
+    // changes. An unfocused split also stops animating, so a pulse there
+    // freezes. On focus gain, Ghostty sets iTimeFocus and iTimeCursorChange in
+    // the same frame, and 0.05 s allows a few frames of skew. A hidden cursor
+    // gets no pulse.
     bool cursorLive = iCursorVisible > 0 && iFocus > 0
         && abs(iTimeCursorChange - iTimeFocus) > 0.05;
 
-    if (cursorLive && isModeChange > 0.0 && isAnimating > 0.0) {
+    if (cursorLive && isModeChange && rippleProgress < 1.0) {
         // Apply easing to progress
         // float easedProgress = rippleProgress;
         // float easedProgress = easeOutQuad(rippleProgress);
@@ -129,18 +133,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
         float fade = 1.0 - easeOutPulse(rippleProgress);
         // float fade = 1.0 - exponentialDecayPulse(rippleProgress);
         
-        // Calculate distance from frag to cursor center
-        // float dist = distance(vu, centerCC);
-        
-        // float sdfRing = abs(dist - rippleExpansion) - RING_THICKNESS * 0.5;
         vec2 halfSizeCC = vec2(currentCursor.z, currentCursor.w) * 0.5 + vec2(rippleExpansion);
         float sdfRectRing = abs(getSdfRectangle(vu, centerCC, halfSizeCC)) - RING_THICKNESS * 0.5;
-        // Antialias (1-pixel width in normalized coords)
-        float antiAliasSize = normalize(vec2(BLUR, BLUR), 0.0).x;
+        // max() keeps the smoothstep edges different when BLUR is 0.0.
+        float antiAliasSize = toShaderSpace(vec2(max(BLUR, 1e-4)), 0.0).x;
         float ripple = (1.0 - smoothstep(-antiAliasSize, antiAliasSize, sdfRectRing)) * fade;
 
-        // Apply ripple effect
-        fragColor = mix(fragColor, COLOR, ripple * COLOR.a);
+        // COLOR.a scales the coverage. Blend toward alpha 1.0, not COLOR.a: a
+        // second COLOR.a makes the pulse too transparent on a translucent
+        // window.
+        fragColor = mix(fragColor, vec4(COLOR.rgb, 1.0), ripple * COLOR.a);
     }
-    // else: do nothing, keep original fragColor
 }

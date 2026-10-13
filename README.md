@@ -16,14 +16,14 @@
 ## Trails
 - [cursor_warp.glsl](cursor_warp.glsl): Neovide-like cursor trail, most customizable shader
 - [cursor_sweep.glsl](cursor_sweep.glsl): Animated trail that shrinks from previous to current cursor position
-- [cursor_tail.glsl](cursor_tail.glsl): Comet-like trail, mimicing kitty terminal's cursor_trail effect
+- [cursor_tail.glsl](cursor_tail.glsl): Comet-like trail, mimicking kitty terminal's cursor_trail effect
 
 ## Pulse/Boom effects
-- These trigger on cursor mode changes (block to line or vice versa, looks cool on changing modes in vim)
-- [sonic_boom_cursor.glsl](sonic_boom_cursor.glsl): expanding filled circle 
+- These trigger when the cursor width changes a lot: block or underline to bar, or back (for example, vim normal to insert mode). Block to underline does not trigger, because both have the same width.
+- [sonic_boom_cursor.glsl](sonic_boom_cursor.glsl): expanding filled circle
 - [ripple_cursor.glsl](ripple_cursor.glsl): Expanding circular ring ripple effect
-- [rectangle_boom_cursor.glsl](rectangle_boom_cursor.glsl): Same as boom_cursor but rectangular(cursor shape)
-- [ripple_rectangle_cursor.glsl](ripple_rectangle_cursor.glsl): Same as ripple_cursor but rectangular(cursor shape)
+- [rectangle_boom_cursor.glsl](rectangle_boom_cursor.glsl): Same as sonic_boom_cursor but rectangular (cursor shape)
+- [ripple_rectangle_cursor.glsl](ripple_rectangle_cursor.glsl): Same as ripple_cursor but rectangular (cursor shape)
 
 ## Usage
 
@@ -45,9 +45,9 @@ Replace `yourshader` with the name of any shader file (e.g., `cursor_sweep`, `ri
 
 
 ## Customization
-- All shaders has customizable parameters (like color, duration, size, thickness, etc) etc at the top of each file. You can adjust
-- Also, all files has various **Easing Functions** to choose from.
-  - these function control the animation curve of the effects, you can make them elasitcy, springy, smooth, linear, etc by changing the easing function
+- All shaders have customizable parameters (like color, duration, size, thickness, etc) at the top of each file.
+- Also, all files have various **Easing Functions** to choose from.
+  - these functions control the animation curve of the effects, you can make them elastic, springy, smooth, linear, etc by changing the easing function
   - in trail shaders, you can comment/uncomment the easing functions in the code
   - in pulse/boom shaders, you can comment/uncomment the lines in the `ANIMATION` section
   - you can also add your own easing functions if you want

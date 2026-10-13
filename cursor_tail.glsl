@@ -60,7 +60,8 @@ const float SPRING_DAMPING = 0.9;
 // pow() is undefined for a negative base.
 //
 // The Back, Elastic and Spring variants go above 1.0. Here that gives a
-// springy motion.
+// springy motion. Spring also dips to -0.17 at the start, so the tail end first
+// moves back past the previous cursor position.
 
 // // Linear
 // float ease(float x) {
@@ -212,7 +213,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     float lineLength = distance(centerCP, centerCC);
 
     // No uniform gives the cell height. An underline cursor is only a few
-    // pixels tall, so its cell height is estimated as twice its width.
+    // pixels tall, so its cell height is estimated as twice its width. On a
+    // wide character the underline is two cells wide, so the estimate doubles.
     float cellHeight = iCurrentCursorStyle == CURSORSTYLE_UNDERLINE ? 2.0 * currentCursor.z : currentCursor.w;
     float minDist = cellHeight * THRESHOLD_MIN_DISTANCE;
 
@@ -231,7 +233,8 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     }
 
     vec2 vu = toShaderSpace(fragCoord, 1.);
-    float aaWidth = 2.0 * BLUR / iResolution.y;
+    // max() keeps the smoothstep edges different when BLUR is 0.0.
+    float aaWidth = 2.0 * max(BLUR, 1e-4) / iResolution.y;
 
     // Short move: the head is already at the cursor, and the tail closes in.
     float eased = ease(progress);
@@ -240,10 +243,15 @@ void mainImage(out vec4 fragColor, in vec2 fragCoord){
     if (lineLength >= MAX_TRAIL_LENGTH) {
         // Long move: the head eases across, and the tail starts after a delay
         // (a fraction of the animation). The cap keeps smoothstep's edge0 below
-        // edge1 when lineLength equals MAX_TRAIL_LENGTH.
+        // edge1 when lineLength equals MAX_TRAIL_LENGTH. The two ends can
+        // cross: near the end smoothstep() runs ahead of progress, and an
+        // overshooting ease also crosses them. The end farther along the move
+        // is the head. Then the fade and the color blend keep their direction,
+        // and the MAX_TRAIL_LENGTH bound below applies to the real streak.
         float tailDelay = min(MAX_TRAIL_LENGTH / lineLength, 0.999);
-        head_eased = eased;
-        tail_eased = ease(smoothstep(tailDelay, 1.0, progress));
+        float delayed = ease(smoothstep(tailDelay, 1.0, progress));
+        head_eased = max(eased, delayed);
+        tail_eased = min(eased, delayed);
     }
     // The delay is in time, but the head is eased, so the head is far ahead
     // when the tail starts. Pull the tail up to keep the gap at most
